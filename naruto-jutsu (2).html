@@ -1,0 +1,732 @@
+<!doctype html>
+<html lang="az">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Naruto Jutsu Kamera</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#05060a;color:#fff;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+#stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000}
+#view{width:100%;height:100%;object-fit:contain;transform:scaleX(-1)}
+#cam{position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none}
+#hud{position:fixed;left:10px;top:10px;display:flex;flex-direction:column;gap:6px;pointer-events:none;z-index:5}
+.chip{font-size:12px;padding:5px 11px;border-radius:999px;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.15);color:#c4cbd9;backdrop-filter:blur(4px);width:max-content}
+.chip.on{color:#fff;border-color:#ff5a3c;background:rgba(150,20,10,.7)}
+.chip.blue.on{border-color:#4cc3ff;background:rgba(10,70,150,.7)}
+.chip.orange.on{border-color:#ffa23c;background:rgba(150,70,10,.7)}
+#help{position:fixed;left:10px;bottom:10px;z-index:6;max-width:min(92vw,420px);font-size:13px;line-height:1.45}
+#help summary{cursor:pointer;display:inline-block;padding:6px 12px;border-radius:999px;background:rgba(0,0,0,.65);border:1px solid rgba(255,255,255,.2)}
+#help .box{margin-top:8px;padding:12px 14px;border-radius:14px;background:rgba(0,0,0,.78);border:1px solid rgba(255,255,255,.15);backdrop-filter:blur(6px)}
+#help p{margin:0 0 7px}
+#help b{color:#ffb199}
+#start{position:fixed;inset:0;z-index:10;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px;text-align:center;background:radial-gradient(circle at 50% 35%,#1b2340,#05060a 70%)}
+#start h1{margin:0;font-size:clamp(26px,6vw,44px);letter-spacing:.5px}
+#start p{margin:0;max-width:520px;color:#aeb7cb;line-height:1.5}
+#go{font-size:17px;padding:14px 30px;border:0;border-radius:999px;background:linear-gradient(135deg,#ff7a1a,#e0201a);color:#fff;font-weight:700;cursor:pointer}
+#go:disabled{opacity:.5;cursor:default}
+#status{min-height:20px;color:#ffcf9a;font-size:14px}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="view"></canvas></div>
+<video id="cam" playsinline muted></video>
+
+<div id="hud">
+  <div class="chip" id="c-sh">Sharingan: gözləyir</div>
+  <div class="chip blue" id="c-ras">Rasengan: gözləyir</div>
+  <div class="chip" id="c-sus">Susanoo: gözləyir</div>
+  <div class="chip orange" id="c-kat">Katon: gözləyir</div>
+  <div class="chip" id="c-clo">Kage Bunshin: gözləyir</div>
+</div>
+
+<details id="help">
+  <summary>Necə işləyir?</summary>
+  <div class="box">
+    <p><b>Rasengan:</b> əlini aç, ovucun üstündə yaranır. Yumruq et, irəli atılır.</p>
+    <p><b>Böyük Rasengan:</b> iki əlini aç, rasenganlar yarandıqdan sonra yan-yana gətir.</p>
+    <p><b>Sharingan:</b> əlinlə gözlərini ört, bir az saxla, sonra əlini yana çək. Gözlərini təxminən 1 saniyə yumub açmaq da işləyir. Sharingan açıqkən əlinlə gözünü ört, söner.</p>
+    <p><b>Susanoo (kuru kafa):</b> Sharingan açıqkən əllərini (açıq ovuc olmadan) yan-yana gətir.</p>
+    <p><b>Katon (alov):</b> Sharingan açıqkən əlini ağzının önünə gətir, sonra ağzını geniş aç.</p>
+    <p><b>Kage Bunshin (klon):</b> şəhadət və orta barmağı aç (V və ya çarpaz), digərlərini yum, bir az saxla.</p>
+    <p>Sınaq düymələri: S (Sharingan), K (kuru kafa), F (alov), C (klon).</p>
+  </div>
+</details>
+
+<div id="start">
+  <h1>Naruto Jutsu Kamera</h1>
+  <p>Ön kameradan istifadə edir. Görüntü yalnız brauzerində emal olunur. İlk açılışda modellər yüklənir, internet lazımdır.</p>
+  <button id="go">Kameranı başlat</button>
+  <div id="status"></div>
+</div>
+
+<script type="module">
+/* ====================== Ayarlar ====================== */
+const V = "0.10.14";
+const URLS = {
+  lib: `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${V}/vision_bundle.mjs`,
+  wasm: `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${V}/wasm`,
+  hand: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+  face: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+  seg: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite"
+};
+
+const $ = s => document.querySelector(s);
+const video = $('#cam'), canvas = $('#view'), ctx = canvas.getContext('2d');
+let W = 1280, H = 720;
+
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const rnd = (a, b) => a + Math.random() * (b - a);
+const easeOut = t => 1 - Math.pow(1 - clamp(t), 3);
+const easeBack = t => { t = clamp(t); const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+
+/* ====================== Sprite-lar ====================== */
+function sprite(r, g, b) {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const x = c.getContext('2d');
+  const gr = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gr.addColorStop(0, `rgba(${r},${g},${b},1)`);
+  gr.addColorStop(0.35, `rgba(${r},${g},${b},0.55)`);
+  gr.addColorStop(1, `rgba(${r},${g},${b},0)`);
+  x.fillStyle = gr; x.fillRect(0, 0, 128, 128);
+  return c;
+}
+const SP = {
+  blue: sprite(80, 170, 255), white: sprite(255, 255, 255), yellow: sprite(255, 225, 130),
+  orange: sprite(255, 120, 30), red: sprite(255, 30, 20), darkred: sprite(170, 0, 0), smoke: sprite(205, 205, 210)
+};
+
+/* ====================== Hissəciklər / effektlər ====================== */
+const parts = [], rings = [], flash = { a: 0, c: '255,255,255' };
+function addP(p) { if (parts.length < 1800) parts.push(p); }
+function puff(x, y, n, spread) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * 6.283, s = 40 + Math.random() * spread;
+    addP({ x: x + rnd(-.5, .5) * spread * .4, y: y + rnd(-.5, .5) * spread * .4, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 20,
+      life: 0, max: rnd(.7, 1.3), size: spread * rnd(.14, .32), grow: 1.4, drag: 2.2, st: ['smoke'], mode: 'source-over', al: .8 });
+  }
+}
+function explode(x, y, R) {
+  rings.push({ x, y, r: R * .2, max: R * 2.2, t: 0, dur: .6, col: '190,235,255', w: R * .09 });
+  rings.push({ x, y, r: R * .2, max: R * 3.4, t: 0, dur: .95, col: '60,150,255', w: R * .06 });
+  for (let i = 0; i < 46; i++) {
+    const a = Math.random() * 6.283, s = rnd(120, 620) * (R / 120);
+    addP({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0, max: rnd(.4, .9), size: R * rnd(.08, .2), grow: .5, drag: 2.5,
+      st: ['white', 'blue', 'blue'], mode: 'lighter', al: 1 });
+  }
+  flash.a = Math.max(flash.a, .5); flash.c = '200,235,255';
+}
+function updateParticles(dt) {
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i]; p.life += dt;
+    if (p.life >= p.max) { parts[i] = parts[parts.length - 1]; parts.pop(); continue; }
+    const d = Math.exp(-(p.drag || 0) * dt); p.vx *= d; p.vy *= d;
+    p.x += p.vx * dt; p.y += p.vy * dt; p.size *= 1 + (p.grow || 0) * dt;
+    if (p.g) p.vy += p.g * dt;
+  }
+  for (let i = rings.length - 1; i >= 0; i--) { rings[i].t += dt; if (rings[i].t >= rings[i].dur) rings.splice(i, 1); }
+}
+function drawParticles() {
+  ctx.save();
+  for (const p of parts) {
+    const u = p.life / p.max;
+    const img = SP[p.st[Math.min(p.st.length - 1, Math.floor(u * p.st.length))]];
+    ctx.globalCompositeOperation = p.mode;
+    ctx.globalAlpha = clamp(p.al * (1 - u) * (u < .1 ? u * 10 : 1));
+    ctx.drawImage(img, p.x - p.size, p.y - p.size, p.size * 2, p.size * 2);
+  }
+  ctx.restore();
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (const r of rings) {
+    const u = r.t / r.dur;
+    ctx.globalAlpha = clamp(1 - u);
+    ctx.strokeStyle = `rgba(${r.col},1)`; ctx.lineWidth = Math.max(1, r.w * (1 - u));
+    ctx.beginPath(); ctx.arc(r.x, r.y, lerp(r.r, r.max, easeOut(u)), 0, 6.2832); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* ====================== Əl analizi ====================== */
+let hands = [], T = 0;
+const hstate = {};
+function processHands(res) {
+  hands = [];
+  const seen = {};
+  if (res && res.landmarks) {
+    const hd = res.handednesses || res.handedness || [];
+    res.landmarks.forEach((lm, i) => {
+      let key = (hd[i] && hd[i][0] && hd[i][0].categoryName) || ('H' + i);
+      if (seen[key]) key += '2';
+      seen[key] = 1;
+      const p = lm.map(l => ({ x: l.x * W, y: l.y * H }));
+      const size = Math.max(dist(p[0], p[9]), dist(p[5], p[17]) * 1.1, 24);
+      const ext = (tip, pip) => dist(p[tip], p[0]) > dist(p[pip], p[0]) * 1.06;
+      const f = [ext(8, 6), ext(12, 10), ext(16, 14), ext(20, 18)];
+      const n = f.filter(Boolean).length;
+      const raw = { open: n === 4, fist: n === 0, peace: f[0] && f[1] && !f[2] && !f[3] };
+      const st = hstate[key] || (hstate[key] = { open: 0, fist: 0, peace: 0 });
+      for (const k in raw) st[k] = raw[k] ? st[k] + 1 : 0;
+      const palm = { x: (p[0].x + p[5].x + p[9].x + p[13].x + p[17].x) / 5, y: (p[0].y + p[5].y + p[9].y + p[13].y + p[17].y) / 5 };
+      let dx = p[9].x - p[0].x, dy = p[9].y - p[0].y; const dl = Math.hypot(dx, dy) || 1; dx /= dl; dy /= dl;
+      hands.push({ key, p, size, palm, dir: { x: dx, y: dy }, open: st.open >= 3, fist: st.fist >= 3, peace: st.peace >= 4 });
+    });
+  }
+  for (const k in hstate) if (!seen[k]) delete hstate[k];
+}
+
+/* ====================== Üz analizi ====================== */
+const EYE_A = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
+const EYE_B = [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466];
+const face = { vis: false, eyes: [], iod: 60, mouth: { x: W / 2, y: H * .7 }, nose: null, bs: {} };
+const eyeRef = { t: -99, eyes: [], iod: 60, mouth: null };
+const centroid = poly => ({ x: poly.reduce((s, p) => s + p.x, 0) / poly.length, y: poly.reduce((s, p) => s + p.y, 0) / poly.length });
+
+function processFace(res) {
+  face.vis = false;
+  const lm = res && res.faceLandmarks && res.faceLandmarks[0];
+  if (!lm) return;
+  const P = i => ({ x: lm[i].x * W, y: lm[i].y * H });
+  const mkEye = idx => {
+    const poly = idx.map(P), cen = centroid(poly);
+    const c1 = P(468), c2 = P(473);
+    const first = dist(cen, c1) < dist(cen, c2);
+    const ci = first ? 468 : 473, cc = first ? c1 : c2;
+    let r = 0; for (let k = 1; k <= 4; k++) r += dist(cc, P(ci + k));
+    return { c: cc, r: r / 4, poly, cen };
+  };
+  const eyes = [mkEye(EYE_A), mkEye(EYE_B)];
+  face.eyes = eyes;
+  face.iod = Math.max(20, dist(eyes[0].cen, eyes[1].cen));
+  const m1 = P(13), m2 = P(14);
+  face.mouth = { x: (m1.x + m2.x) / 2, y: (m1.y + m2.y) / 2 };
+  face.nose = P(1);
+  const bs = {};
+  const cats = res.faceBlendshapes && res.faceBlendshapes[0] && res.faceBlendshapes[0].categories;
+  if (cats) for (const c of cats) bs[c.categoryName] = c.score;
+  face.bs = bs; face.vis = true;
+  eyeRef.t = T; eyeRef.eyes = eyes.map(e => ({ c: e.cen })); eyeRef.iod = face.iod; eyeRef.mouth = face.mouth;
+}
+const refOk = () => T - eyeRef.t < 1.5 && eyeRef.eyes.length > 0;
+function eyeNear(h, k = 1) {
+  if (!refOk()) return false;
+  for (const e of eyeRef.eyes) {
+    if (dist(h.palm, e.c) < eyeRef.iod * .95 * k) return true;
+    if (dist(h.p[8], e.c) < eyeRef.iod * .55 * k || dist(h.p[12], e.c) < eyeRef.iod * .55 * k) return true;
+  }
+  return false;
+}
+function mouthNear(h) { return refOk() && eyeRef.mouth && dist(h.palm, eyeRef.mouth) < eyeRef.iod * 1.3; }
+
+/* ====================== Sharingan ====================== */
+const sh = { active: false, fade: 0, closedFor: 0, spin: 0,
+  covering: false, coverT: 0, clearT: 0, startedActive: false, noBlink: 0, rasLock: 0 };
+function activateSharingan() {
+  sh.active = true;
+  flash.a = Math.max(flash.a, .45); flash.c = '255,30,20';
+  for (const e of face.eyes) rings.push({ x: e.c.x, y: e.c.y, r: 4, max: face.iod * 1.4, t: 0, dur: .8, col: '255,40,30', w: face.iod * .07 });
+}
+function deactivateSharingan() {
+  sh.active = false;
+  if (refOk()) for (const e of eyeRef.eyes) puff(e.c.x, e.c.y, 7, eyeRef.iod * 1.2);
+}
+function faceNear(h) { return refOk() && eyeRef.eyes.some(e => dist(h.palm, e.c) < eyeRef.iod * 1.6); }
+function updateSharingan(dt) {
+  // 1) Əl gözləri örtür? Örtülmə bitəndə (əl yana çəkiləndə) Sharingan açılır.
+  //    Sharingan aktivkən örtmək onu söndürür.
+  let covering = false;
+  for (const h of hands) if (eyeNear(h)) covering = true;
+  if (covering) {
+    if (!sh.covering) { sh.covering = true; sh.coverT = 0; sh.startedActive = sh.active; }
+    sh.coverT += dt; sh.clearT = 0;
+    if (sh.coverT < 4) eyeRef.t = T;      // əl üzü gizlədəndə göz mövqeyini yadda saxla
+    sh.noBlink = .7; sh.closedFor = 0; sh.rasLock = 1.2;
+    if (sh.active && sh.startedActive && sh.coverT > .4) deactivateSharingan();
+  } else {
+    sh.noBlink = Math.max(0, sh.noBlink - dt);
+    sh.rasLock = Math.max(0, sh.rasLock - dt);
+    if (sh.covering) {
+      sh.clearT += dt;
+      if (sh.clearT > .15) {
+        if (!sh.startedActive && !sh.active && sh.coverT >= .3) activateSharingan();
+        sh.covering = false; sh.coverT = 0;
+      }
+    }
+  }
+
+  // 2) Gözləri ~1 saniyə yum, sonra aç.
+  const bl = face.bs.eyeBlinkLeft, br = face.bs.eyeBlinkRight;
+  const closed = face.vis && bl !== undefined && br !== undefined && Math.min(bl, br) > .5 && sh.noBlink <= 0;
+  if (closed) sh.closedFor += dt;
+  else if (face.vis) {
+    if (sh.closedFor >= .8 && !sh.active) activateSharingan();
+    sh.closedFor = 0;
+  } else sh.closedFor = Math.max(0, sh.closedFor - dt);
+
+  sh.fade = clamp(sh.fade + (sh.active ? dt * 5 : -dt * 3.5));
+  sh.spin += dt * (1.6 + (1 - sh.fade) * 18);
+}
+function tomoe(c, rho, phi, s) {
+  c.beginPath(); c.arc(Math.cos(phi) * rho, Math.sin(phi) * rho, s, 0, 6.2832); c.fill();
+  const p1 = [], p2 = [], N = 10;
+  for (let i = 0; i <= N; i++) {
+    const u = i / N, ang = phi + u * 1.15, rr = rho * (1 - .22 * u), w = s * (1 - u) * .95;
+    p1.push([Math.cos(ang) * (rr + w), Math.sin(ang) * (rr + w)]);
+    p2.push([Math.cos(ang) * (rr - w * .2), Math.sin(ang) * (rr - w * .2)]);
+  }
+  c.beginPath();
+  p1.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1]));
+  p2.reverse().forEach(p => c.lineTo(p[0], p[1]));
+  c.closePath(); c.fill();
+}
+function sharinganDisc(c, x, y, R, rot) {
+  c.save(); c.translate(x, y);
+  const g = c.createRadialGradient(0, 0, 0, 0, 0, R);
+  g.addColorStop(0, '#c40010'); g.addColorStop(.7, '#e0101e'); g.addColorStop(1, '#8e0008');
+  c.fillStyle = g; c.beginPath(); c.arc(0, 0, R, 0, 6.2832); c.fill();
+  c.strokeStyle = '#120002'; c.lineWidth = R * .07; c.beginPath(); c.arc(0, 0, R * .96, 0, 6.2832); c.stroke();
+  c.lineWidth = R * .045; c.beginPath(); c.arc(0, 0, R * .6, 0, 6.2832); c.stroke();
+  c.fillStyle = '#120002';
+  for (let i = 0; i < 3; i++) tomoe(c, R * .6, rot + i * 2.0944, R * .13);
+  c.beginPath(); c.arc(0, 0, R * .17, 0, 6.2832); c.fill();
+  c.restore();
+}
+function drawSharingan() {
+  if (sh.fade < .02) return;
+  const a = sh.fade;
+  if (face.vis) {
+    for (const e of face.eyes) {
+      const R = Math.max(e.r * 1.35, 4);
+      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .7 * a;
+      ctx.drawImage(SP.red, e.c.x - R * 3, e.c.y - R * 3, R * 6, R * 6); ctx.restore();
+      ctx.save(); ctx.beginPath();
+      e.poly.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+      ctx.closePath(); ctx.clip(); ctx.globalAlpha = a;
+      sharinganDisc(ctx, e.c.x, e.c.y, R, sh.spin);
+      ctx.restore();
+    }
+  }
+  // künc emblemi
+  const R = H * .07, ex = R * 1.7 + 12, ey = R * 1.7 + 12;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .55 * a;
+  ctx.drawImage(SP.red, ex - R * 2.2, ey - R * 2.2, R * 4.4, R * 4.4); ctx.restore();
+  ctx.save(); ctx.globalAlpha = a; sharinganDisc(ctx, ex, ey, R, sh.spin); ctx.restore();
+}
+
+/* ====================== Rasengan ====================== */
+const ras = []; let bigT = 0, bigInfo = { x: W / 2, y: H / 2, R: 150 }, pairNow = null;
+function updateRasengan(dt) {
+  for (const h of hands) {
+    let r = ras.find(q => q.state === 'held' && q.key === h.key && !q.dead);
+    if (r && eyeNear(h)) { r.dead = true; continue; }
+    if (!r && h.open && !sh.covering && sh.rasLock <= 0 && !faceNear(h)) {
+      r = { state: 'held', key: h.key, x: h.palm.x, y: h.palm.y, charge: 0, size: 0, a: 0, missing: 0, t: 0, h: null };
+      ras.push(r);
+    }
+    if (!r) continue;
+    r.h = h; r.missing = 0; r.t += dt;
+    const tx = h.palm.x + h.dir.x * h.size * .2, ty = h.palm.y + h.dir.y * h.size * .2;
+    const k = Math.min(1, dt * 16); r.x += (tx - r.x) * k; r.y += (ty - r.y) * k;
+    if (h.open) r.charge = Math.min(1, r.charge + dt / .8);
+    else if (h.fist && r.charge < .3) r.dead = true;
+    r.size += (h.size * .95 * easeOut(r.charge) - r.size) * Math.min(1, dt * 12);
+    r.a = Math.min(1, r.a + dt * 5);
+  }
+  // əli itən rasenganlar
+  for (const r of ras) {
+    if (r.state !== 'held') continue;
+    if (!hands.some(h => h.key === r.key)) { r.h = null; r.missing += dt; if (r.missing > .35) { r.dead = true; puff(r.x, r.y, 6, r.size * 1.2); } }
+  }
+  // cüt (böyük rasengan)
+  const held = ras.filter(q => q.state === 'held' && q.h && !q.dead && q.charge >= .6);
+  pairNow = null;
+  if (held.length >= 2) {
+    const a = held[0], b = held[1], d = dist(a.h.palm, b.h.palm), avg = (a.h.size + b.h.size) / 2;
+    const lim = bigT > .5 ? 3.2 : 2.6;
+    if (d < avg * lim && !(a.h.fist && b.h.fist && bigT < .5)) pairNow = [a, b];
+  }
+  if (pairNow) {
+    const [a, b] = pairNow;
+    bigInfo = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, R: ((a.h.size + b.h.size) / 2) * 1.9 };
+  }
+  bigT += ((pairNow ? 1 : 0) - bigT) * Math.min(1, dt * 5);
+  if (bigT < .01) bigT = 0;
+
+  // atma
+  if (pairNow && bigT > .6 && pairNow[0].h.fist && pairNow[1].h.fist) {
+    const [a, b] = pairNow;
+    ras.push({ state: 'fly', big: true, x: bigInfo.x, y: bigInfo.y, x0: bigInfo.x, y0: bigInfo.y, size: bigInfo.R, size0: bigInfo.R,
+      u: 0, dur: 1.5, dirx: (a.h.dir.x + b.h.dir.x) / 2, diry: (a.h.dir.y + b.h.dir.y) / 2, t: 0 });
+    a.dead = b.dead = true; bigT = 0;
+    flash.a = Math.max(flash.a, .3); flash.c = '170,220,255';
+  } else {
+    for (const r of ras) {
+      if (r.state === 'held' && !r.dead && r.h && r.h.fist && r.charge >= .3 && !(pairNow && pairNow.includes(r))) {
+        r.state = 'fly'; r.big = false; r.x0 = r.x; r.y0 = r.y; r.size0 = Math.max(r.size, 12);
+        r.u = 0; r.dur = 1.1; r.dirx = r.h.dir.x; r.diry = r.h.dir.y; r.h = null;
+        rings.push({ x: r.x, y: r.y, r: r.size * .6, max: r.size * 1.8, t: 0, dur: .35, col: '170,225,255', w: r.size * .06 });
+      }
+    }
+  }
+
+  // uçuş və qığılcımlar
+  const vp = { x: W / 2, y: H * .42 };
+  for (const r of ras) {
+    if (r.state === 'fly') {
+      r.u += dt / r.dur; const u = Math.min(1, r.u);
+      const s = 1 / (1 + 4 * u), f = (1 - s) / .8;
+      r.x = r.x0 + (vp.x - r.x0) * f * .85 + r.dirx * r.size0 * 1.6 * u;
+      r.y = r.y0 + (vp.y - r.y0) * f * .85 + r.diry * r.size0 * 1.6 * u;
+      r.size = r.size0 * s;
+      for (let i = 0; i < 3; i++)
+        addP({ x: r.x + rnd(-1, 1) * r.size * .4, y: r.y + rnd(-1, 1) * r.size * .4, vx: rnd(-40, 40), vy: rnd(-40, 40), life: 0, max: rnd(.25, .5),
+          size: r.size * rnd(.25, .5), grow: -.6, drag: 3, st: ['white', 'blue'], mode: 'lighter', al: .8 });
+      if (r.u >= 1) { explode(r.x, r.y, r.size0 * (r.big ? 1.6 : 1.1)); r.dead = true; }
+    } else if (r.state === 'held' && r.size > 10) {
+      const a = Math.random() * 6.283;
+      addP({ x: r.x + Math.cos(a) * r.size, y: r.y + Math.sin(a) * r.size, vx: Math.cos(a) * 90, vy: Math.sin(a) * 90, life: 0, max: .35,
+        size: r.size * .1, grow: -.5, drag: 2, st: ['white', 'blue'], mode: 'lighter', al: .9 });
+    }
+  }
+  for (let i = ras.length - 1; i >= 0; i--) if (ras[i].dead) ras.splice(i, 1);
+}
+function drawRasengan(x, y, R, a, t) {
+  if (R < 2 || a <= 0.01) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = .6 * a; ctx.drawImage(SP.blue, x - R * 3, y - R * 3, R * 6, R * 6);
+  ctx.globalAlpha = 1;
+  const g = ctx.createRadialGradient(x, y, 0, x, y, R);
+  g.addColorStop(0, `rgba(255,255,255,${a})`);
+  g.addColorStop(.45, `rgba(170,232,255,${.9 * a})`);
+  g.addColorStop(.8, `rgba(40,150,255,${.7 * a})`);
+  g.addColorStop(1, 'rgba(10,80,255,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, R, 0, 6.2832); ctx.fill();
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 16; i++) {
+    const ph = i / 16 * 6.2832 + t * (4 + (i % 3));
+    const rr = R * (.35 + .6 * (((i * 37) % 10) / 10));
+    const ry = rr * (.3 + .55 * ((i % 4) / 4));
+    ctx.beginPath();
+    ctx.ellipse(x, y, rr, ry, t * 3 + i * 1.3, ph, ph + .9 + .5 * (((i * 13) % 5) / 5));
+    ctx.strokeStyle = `rgba(225,247,255,${.55 * a})`; ctx.lineWidth = Math.max(1, R * .04);
+    ctx.stroke();
+  }
+  ctx.strokeStyle = `rgba(255,255,255,${.5 * a})`; ctx.lineWidth = Math.max(1, R * .025);
+  ctx.beginPath(); ctx.arc(x, y, R * .98, 0, 6.2832); ctx.stroke();
+  ctx.restore();
+}
+function drawRasengans() {
+  for (const r of ras) {
+    if (r.state === 'held') {
+      let x = r.x, y = r.y, R = r.size, a = r.a;
+      if (pairNow && pairNow.includes(r)) {
+        x = lerp(x, bigInfo.x, bigT); y = lerp(y, bigInfo.y, bigT); R *= 1 - .7 * bigT; a *= 1 - .9 * bigT;
+      } else if (bigT > 0 && !pairNow) { a *= 1; }
+      drawRasengan(x, y, R, a, T + r.t);
+    } else drawRasengan(r.x, r.y, r.size, 1, T);
+  }
+  if (bigT > .02) drawRasengan(bigInfo.x, bigInfo.y, bigInfo.R * easeOut(bigT), clamp(bigT * 1.3), T);
+}
+
+/* ====================== Susanoo (kuru kafa) ====================== */
+const skull = { on: false, t: 0, hold: 0, grace: 0, forced: false };
+function updateSkull(dt) {
+  let cond = skull.forced;
+  if (sh.active && !sh.covering && hands.length >= 2 && !ras.some(r => r.state === 'held' && r.charge > .25)) {
+    const d = dist(hands[0].palm, hands[1].palm), avg = (hands[0].size + hands[1].size) / 2;
+    if (d < avg * 2.4) cond = true;
+  }
+  skull.hold = cond ? skull.hold + dt : Math.max(0, skull.hold - dt * 2);
+  if (!skull.on && (skull.hold > .25 || skull.forced)) {
+    skull.on = true; skull.grace = 1.2;
+    flash.a = Math.max(flash.a, .4); flash.c = '255,20,10';
+  }
+  if (skull.on) {
+    if (cond) skull.grace = 1.2; else skull.grace -= dt;
+    if (skull.grace <= 0 || (!sh.active && !skull.forced)) { skull.on = false; skull.hold = 0; }
+  }
+  skull.t = clamp(skull.t + (skull.on ? dt * 2.2 : -dt * 3));
+  if (skull.t > .05) {
+    const S = H * .42, cx = W / 2, cy = H * .44, n = Math.round(240 * dt * skull.t);
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * 6.283, k = rnd(.8, 1.08);
+      addP({ x: cx + Math.cos(a) * S * .66 * k, y: cy + Math.sin(a) * S * .84 * k, vx: rnd(-30, 30) + Math.cos(a) * 30, vy: -rnd(90, 260),
+        life: 0, max: rnd(.6, 1.3), size: S * rnd(.04, .1), grow: .2, drag: .6, st: ['yellow', 'orange', 'red', 'darkred'], mode: 'lighter', al: .8 * skull.t });
+    }
+  }
+}
+function skullOutline(c) {
+  c.beginPath();
+  c.moveTo(-.34, .80); c.lineTo(-.30, .62);
+  c.bezierCurveTo(-.40, .50, -.50, .42, -.54, .22);
+  c.bezierCurveTo(-.72, 0, -.74, -.45, -.50, -.66);
+  c.bezierCurveTo(-.30, -.88, .30, -.88, .50, -.66);
+  c.bezierCurveTo(.74, -.45, .72, 0, .54, .22);
+  c.bezierCurveTo(.50, .42, .40, .50, .30, .62);
+  c.lineTo(.34, .80); c.quadraticCurveTo(0, .90, -.34, .80);
+  c.closePath();
+}
+function drawSkull() {
+  if (skull.t < .02) return;
+  const S = H * .42 * (.3 + .7 * easeBack(skull.t)) * (1 + .015 * Math.sin(T * 5)), cx = W / 2, cy = H * .44, a = easeOut(skull.t);
+  // qırmızı vinyet
+  ctx.save(); ctx.globalAlpha = a * .8;
+  const vg = ctx.createRadialGradient(W / 2, H / 2, H * .25, W / 2, H / 2, H * .95);
+  vg.addColorStop(0, 'rgba(120,0,0,0)'); vg.addColorStop(1, 'rgba(150,0,0,.5)');
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H); ctx.restore();
+  // arxa glow
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .55 * a;
+  ctx.drawImage(SP.red, cx - S * 1.5, cy - S * 1.5, S * 3, S * 3); ctx.restore();
+
+  ctx.save(); ctx.translate(cx, cy); ctx.scale(S, S); ctx.globalAlpha = .85 * a; ctx.lineCap = 'round';
+  // qabırğalar və fəqərə
+  for (let i = 0; i < 4; i++) {
+    ctx.beginPath(); ctx.ellipse(0, .95 + i * .2, .95 - i * .08, .34, 0, .05 * Math.PI, .95 * Math.PI);
+    ctx.strokeStyle = `rgba(255,${60 + i * 12},40,${.6 - i * .09})`; ctx.lineWidth = .05 - i * .006; ctx.stroke();
+  }
+  ctx.beginPath(); ctx.moveTo(0, .85); ctx.lineTo(0, 2); ctx.strokeStyle = 'rgba(255,70,50,.55)'; ctx.lineWidth = .06; ctx.stroke();
+  // kəllə
+  skullOutline(ctx);
+  const g = ctx.createRadialGradient(0, -.15, .05, 0, -.1, .95);
+  g.addColorStop(0, 'rgba(255,205,185,.6)'); g.addColorStop(.5, 'rgba(255,60,40,.5)'); g.addColorStop(1, 'rgba(120,0,0,.4)');
+  ctx.fillStyle = g; ctx.shadowColor = 'rgba(255,40,20,1)'; ctx.shadowBlur = S * .12; ctx.fill();
+  ctx.shadowBlur = 0; ctx.lineWidth = .028; ctx.strokeStyle = 'rgba(255,80,60,.95)'; ctx.stroke();
+  // çatlaqlar
+  ctx.lineWidth = .012; ctx.strokeStyle = 'rgba(120,0,0,.8)';
+  ctx.beginPath(); ctx.moveTo(.1, -.84); ctx.lineTo(.04, -.62); ctx.lineTo(.12, -.5); ctx.lineTo(.06, -.36); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-.4, -.7); ctx.lineTo(-.3, -.55); ctx.lineTo(-.34, -.42); ctx.stroke();
+  // göz çuxurları
+  for (const sx of [-1, 1]) {
+    ctx.save(); ctx.translate(sx * .26, -.02); ctx.rotate(-sx * .3);
+    ctx.beginPath(); ctx.ellipse(0, 0, .17, .2, 0, 0, 6.2832);
+    ctx.fillStyle = 'rgba(20,0,0,.92)'; ctx.fill(); ctx.strokeStyle = 'rgba(255,70,50,.9)'; ctx.lineWidth = .015; ctx.stroke();
+    ctx.restore();
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = (.55 + .35 * Math.sin(T * 6)) * a;
+    ctx.drawImage(SP.red, sx * .26 - .2, -.02 - .2, .4, .4); ctx.restore();
+  }
+  // burun
+  ctx.beginPath(); ctx.moveTo(0, .12); ctx.quadraticCurveTo(-.12, .32, -.07, .37); ctx.lineTo(0, .3); ctx.lineTo(.07, .37);
+  ctx.quadraticCurveTo(.12, .32, 0, .12); ctx.fillStyle = 'rgba(20,0,0,.9)'; ctx.fill();
+  // dişlər
+  ctx.strokeStyle = 'rgba(255,90,70,.9)'; ctx.lineWidth = .016;
+  ctx.beginPath(); ctx.moveTo(-.3, .66); ctx.lineTo(.3, .66); ctx.stroke();
+  for (let i = 0; i < 7; i++) { const x = -.3 + i * .1; ctx.beginPath(); ctx.moveTo(x, .56); ctx.lineTo(x, .78); ctx.stroke(); }
+  ctx.restore();
+}
+
+/* ====================== Katon (alov) ====================== */
+const fire = { armed: 0, on: false, forced: false };
+function updateFire(dt) {
+  let near = false;
+  if (sh.active && !sh.covering && refOk()) for (const h of hands) if (mouthNear(h)) near = true;
+  if (near) fire.armed = 2; else fire.armed = Math.max(0, fire.armed - dt);
+  const jaw = face.bs.jawOpen || 0;
+  const was = fire.on;
+  fire.on = fire.forced || (sh.active && face.vis && fire.armed > 0 && jaw > (fire.on ? .22 : .4));
+  if (was && !fire.on) fire.armed = 0;
+  if (fire.on) {
+    const m = face.vis ? face.mouth : eyeRef.mouth || { x: W / 2, y: H * .65 };
+    const u = (face.vis ? face.iod : eyeRef.iod) / 60;
+    const n = Math.max(1, Math.round(190 * dt));
+    for (let i = 0; i < n; i++) {
+      const ang = Math.PI / 2 + rnd(-1.1, 1.1), sp = rnd(160, 560) * u;
+      addP({ x: m.x + rnd(-8, 8) * u, y: m.y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 0, max: rnd(.5, 1),
+        size: 15 * u * rnd(.8, 1.5), grow: 2, drag: 1.2, g: -80, st: ['white', 'yellow', 'orange', 'red', 'darkred'], mode: 'lighter', al: 1 });
+    }
+  }
+}
+function drawFire() {
+  if (!fire.on) return;
+  const m = face.vis ? face.mouth : eyeRef.mouth || { x: W / 2, y: H * .65 };
+  const u = (face.vis ? face.iod : eyeRef.iod) / 60;
+  const R = 55 * u * (1 + .15 * Math.sin(T * 25));
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .85;
+  ctx.drawImage(SP.orange, m.x - R * 2, m.y - R * 2, R * 4, R * 4); ctx.globalAlpha = .9;
+  ctx.drawImage(SP.yellow, m.x - R, m.y - R, R * 2, R * 2); ctx.restore();
+}
+
+/* ====================== Kage Bunshin (klon) ====================== */
+const clone = { on: false, age: 0, seal: 0, cool: 0, vis: 0 };
+const person = { ready: false, canvas: document.createElement('canvas'), mc: document.createElement('canvas'), img: null };
+const CLONES = [{ dx: -.58, s: .8, d: .35 }, { dx: .58, s: .8, d: .35 }, { dx: -.3, s: .92, d: 0 }, { dx: .3, s: .92, d: 0 }];
+function startClones() {
+  clone.on = true; clone.age = 0; clone.cool = 1.2;
+  CLONES.forEach(c => puff(W / 2 + c.dx * W, H * .55, 14, H * .35));
+  flash.a = Math.max(flash.a, .25); flash.c = '255,255,255';
+}
+function stopClones() {
+  clone.on = false; clone.cool = 1.2;
+  CLONES.forEach(c => puff(W / 2 + c.dx * W, H * .55, 12, H * .35));
+}
+function updateClones(dt) {
+  clone.cool = Math.max(0, clone.cool - dt);
+  if (clone.on) clone.age += dt;
+  const any = hands.some(h => h.peace);
+  clone.seal = any ? clone.seal + dt : Math.max(0, clone.seal - dt * 2);
+  if (clone.seal > .45 && clone.cool <= 0) {
+    if (!clone.on) startClones(); else if (clone.age > 1.5) stopClones();
+    clone.seal = 0;
+  }
+  if (clone.on && clone.age > 9) stopClones();
+  clone.vis = clamp(clone.vis + (clone.on ? dt * 4 : -dt * 5));
+  if (clone.vis <= 0) person.ready = false;
+}
+function buildPerson(arr, w, h, inv) {
+  const pc = person.canvas, mc = person.mc;
+  if (mc.width !== w || mc.height !== h) {
+    mc.width = w; mc.height = h; pc.width = w; pc.height = h;
+    person.img = mc.getContext('2d').createImageData(w, h);
+  }
+  const d = person.img.data;
+  for (let i = 0, n = w * h; i < n; i++) {
+    let v = arr[i]; if (inv) v = 1 - v;
+    d[i * 4 + 3] = v < .4 ? 0 : (v > .6 ? 255 : (v - .4) * 5 * 255);
+  }
+  mc.getContext('2d').putImageData(person.img, 0, 0);
+  const p = pc.getContext('2d');
+  p.globalCompositeOperation = 'source-over'; p.clearRect(0, 0, w, h);
+  p.drawImage(video, 0, 0, w, h);
+  p.globalCompositeOperation = 'destination-in'; p.drawImage(mc, 0, 0);
+  p.globalCompositeOperation = 'source-over';
+  person.ready = true;
+}
+function drawClones() {
+  if (clone.vis <= .01) return;
+  const src = person.ready ? person.canvas : null;
+  CLONES.forEach(sp => {
+    const a = clamp((clone.vis - sp.d) / (1 - sp.d));
+    if (a <= 0) return;
+    ctx.save(); ctx.globalAlpha = a;
+    ctx.translate(W / 2 + sp.dx * W, H); ctx.scale(sp.s, sp.s); ctx.translate(-W / 2, -H);
+    if (src) ctx.drawImage(src, 0, 0, W, H); else { ctx.globalAlpha = a * .4; ctx.drawImage(video, 0, 0, W, H); }
+    ctx.restore();
+  });
+  if (src) ctx.drawImage(src, 0, 0, W, H);
+}
+
+/* ====================== Əsas dövr ====================== */
+let handLm, faceLm, segmenter = null, segIdx = -1, segInv = false;
+let handRes = null, faceRes = null, lastVT = -1, lastTs = 0, frame = 0, lastNow = performance.now(), hudT = 0;
+const chip = { sh: $('#c-sh'), ras: $('#c-ras'), kat: $('#c-kat'), clo: $('#c-clo'), sus: $('#c-sus') };
+const setChip = (el, on, text) => { el.textContent = text; el.classList.toggle('on', !!on); };
+
+function updateHud(dt) {
+  hudT += dt; if (hudT < .15) return; hudT = 0;
+  const pct = Math.min(100, Math.round(sh.closedFor / .8 * 100));
+  const handHint = sh.covering && !sh.startedActive && !sh.active;
+  setChip(chip.sh, sh.active || handHint,
+    sh.active ? 'Sharingan: aktiv'
+      : handHint ? (sh.coverT >= .3 ? 'Sharingan: əli yana çək' : 'Sharingan: əl tutulur')
+      : (sh.closedFor > .25 ? `Sharingan: ${pct}%` : 'Sharingan: gözləyir'));
+  const held = ras.some(r => r.state === 'held'), fly = ras.some(r => r.state === 'fly');
+  setChip(chip.ras, held || fly, bigT > .5 ? 'Böyük Rasengan' : fly ? 'Rasengan: atıldı' : held ? 'Rasengan: aktiv' : 'Rasengan: gözləyir');
+  setChip(chip.sus, skull.on, skull.on ? 'Susanoo: aktiv' : 'Susanoo: gözləyir');
+  setChip(chip.kat, fire.on || fire.armed > 0, fire.on ? 'Katon: alov!' : fire.armed > 0 ? 'Katon: hazır (ağzı aç)' : 'Katon: gözləyir');
+  setChip(chip.clo, clone.on, clone.on ? 'Kage Bunshin: aktiv' : 'Kage Bunshin: gözləyir');
+}
+
+function runSeg(ts) {
+  segmenter.segmentForVideo(video, ts, res => {
+    const ms = res && res.confidenceMasks; if (!ms || !ms.length) return;
+    let idx = segIdx < 0 ? ms.length - 1 : Math.min(segIdx, ms.length - 1), inv = segInv;
+    if (face.vis && face.nose) {
+      let best = -1, bv = -1;
+      ms.forEach((m, i) => {
+        const a = m.getAsFloat32Array();
+        const x = clamp(Math.round(face.nose.x / W * (m.width - 1)), 0, m.width - 1);
+        const y = clamp(Math.round(face.nose.y / H * (m.height - 1)), 0, m.height - 1);
+        const v = a[y * m.width + x]; if (v > bv) { bv = v; best = i; }
+      });
+      idx = best; inv = ms.length === 1 && bv < .5; segIdx = idx; segInv = inv;
+    }
+    const m = ms[idx]; buildPerson(m.getAsFloat32Array(), m.width, m.height, inv);
+  });
+}
+
+function update(dt) {
+  updateSharingan(dt); updateRasengan(dt); updateSkull(dt); updateFire(dt); updateClones(dt);
+  updateParticles(dt);
+  flash.a = Math.max(0, flash.a - dt * 2.2);
+  updateHud(dt);
+}
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.drawImage(video, 0, 0, W, H);
+  drawClones();
+  drawSkull();
+  drawSharingan();
+  drawFire();
+  drawParticles();
+  drawRasengans();
+  if (flash.a > .01) { ctx.fillStyle = `rgba(${flash.c},${flash.a})`; ctx.fillRect(0, 0, W, H); }
+}
+
+function loop() {
+  requestAnimationFrame(loop);
+  const now = performance.now();
+  const dt = Math.min(.05, (now - lastNow) / 1000); lastNow = now; T = now / 1000;
+  if (video.readyState < 2) return;
+  if (video.currentTime !== lastVT) {
+    lastVT = video.currentTime; frame++;
+    const ts = Math.max(now, lastTs + 1); lastTs = ts;
+    try {
+      processHands(handLm.detectForVideo(video, ts));
+      processFace(faceLm.detectForVideo(video, ts));
+    } catch (e) { console.warn(e); }
+    if (segmenter && (clone.on || clone.vis > 0) && frame % 2 === 0) { try { runSeg(ts); } catch (e) { console.warn(e); } }
+  }
+  update(dt); render();
+}
+
+/* ====================== Başlatma ====================== */
+async function make(Cls, fileset, model, opts) {
+  let err;
+  for (const delegate of ['GPU', 'CPU']) {
+    try { return await Cls.createFromOptions(fileset, { baseOptions: { modelAssetPath: model, delegate }, ...opts }); }
+    catch (e) { err = e; console.warn(delegate, e); }
+  }
+  throw err;
+}
+const setStatus = s => { $('#status').textContent = s; };
+
+async function init() {
+  const btn = $('#go'); btn.disabled = true;
+  try {
+    setStatus('Kamera açılır...');
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    video.srcObject = stream; await video.play();
+    W = video.videoWidth || 1280; H = video.videoHeight || 720;
+    canvas.width = W; canvas.height = H;
+
+    setStatus('Modellər yüklənir (ilk dəfə bir az çəkə bilər)...');
+    const Tasks = await import(URLS.lib);
+    const fileset = await Tasks.FilesetResolver.forVisionTasks(URLS.wasm);
+    handLm = await make(Tasks.HandLandmarker, fileset, URLS.hand, { runningMode: 'VIDEO', numHands: 2 });
+    faceLm = await make(Tasks.FaceLandmarker, fileset, URLS.face, { runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: true });
+    make(Tasks.ImageSegmenter, fileset, URLS.seg, { runningMode: 'VIDEO', outputCategoryMask: false, outputConfidenceMasks: true })
+      .then(s => { segmenter = s; }).catch(e => console.warn('Seqmentasiya yüklənmədi, klonlar sadə rejimdə işləyəcək', e));
+
+    $('#start').style.display = 'none';
+    requestAnimationFrame(loop);
+  } catch (e) {
+    console.error(e);
+    btn.disabled = false;
+    const name = e && e.name;
+    if (name === 'NotAllowedError') setStatus('Kamera icazəsi verilmədi. Brauzerin ünvan çubuğundan icazə ver və yenidən yoxla.');
+    else if (name === 'NotFoundError') setStatus('Kamera tapılmadı.');
+    else setStatus('Xəta: ' + (e && e.message ? e.message : e) + ' (internet bağlantısını yoxla)');
+  }
+}
+$('#go').addEventListener('click', init);
+
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 's') sh.active ? deactivateSharingan() : activateSharingan();
+  else if (k === 'k') skull.forced = !skull.forced;
+  else if (k === 'f') fire.forced = !fire.forced;
+  else if (k === 'c') clone.on ? stopClones() : startClones();
+});
+</script>
+</body>
+</html>
